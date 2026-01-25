@@ -130,6 +130,11 @@ if [ "$CACHE_EMBEDDINGS" = "true" ]; then
     CMD_ARGS+=(--cache_embeddings)
 fi
 
+# Set PYTHONPATH to include the evo repo (in case not installed in editable mode)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EVO_REPO_DIR="$(dirname "$SCRIPT_DIR")"
+export PYTHONPATH="${EVO_REPO_DIR}:${PYTHONPATH}"
+
 # Run embedding analysis
 echo "Running: python -m evo.embedding_analysis ${CMD_ARGS[*]}"
 echo ""
