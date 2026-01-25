@@ -1,5 +1,83 @@
 # Evo: DNA foundation modeling from molecular to genome scale
 
+> **Note:** This is a fork of the [original Evo repository](https://github.com/evo-design/evo) with added support for **embedding extraction and analysis**. This allows you to extract embeddings from DNA sequences using the Evo model and perform downstream classification analysis.
+
+---
+
+## Embedding Analysis
+
+This fork adds the ability to extract embeddings from the Evo model and evaluate them using linear probes, neural networks, and visualization.
+
+The embedding extraction approach is based on the solutions discussed in [GitHub Issue #32](https://github.com/evo-design/evo/issues/32) and [GitHub Issue #93](https://github.com/evo-design/evo/issues/93).
+
+### 1. Prepare Your Data
+
+Create a directory containing three CSV files with `sequence` and `label` columns:
+
+```
+my_dataset/
+├── train.csv
+├── dev.csv    # (or val.csv)
+└── test.csv
+```
+
+Each CSV should have this format:
+```csv
+sequence,label
+ACGTACGTACGT...,0
+TGCATGCATGCA...,1
+GGCCAATTGGCC...,0
+```
+
+- `sequence`: DNA sequence (A, C, G, T characters)
+- `label`: Integer class label (0, 1 for binary classification)
+
+### 2. Run Embedding Analysis
+
+```bash
+python -m evo.embedding_analysis \
+    --csv_dir="/path/to/my_dataset" \
+    --model_name="evo-1-8k-base" \
+    --output_dir="./results/embedding_analysis" \
+    --pooling="mean" \
+    --include_random_baseline  # Optional: compare with random embeddings
+```
+
+**Key Options:**
+- `--model_name`: Evo model to use (`evo-1.5-8k-base`, `evo-1-8k-base`, `evo-1-131k-base`, `evo-1-8k-crispr`, `evo-1-8k-transposon`)
+- `--pooling`: Pooling strategy (`mean`, `first`, `last`)
+- `--batch_size`: Batch size for embedding extraction (default: 8, reduce if OOM)
+- `--max_length`: Maximum sequence length (default: 8192)
+- `--layer_idx`: Layer index for intermediate embeddings (default: final layer)
+- `--skip_nn`: Only run linear probe, skip neural network training
+- `--cache_embeddings`: Cache embeddings to disk for reuse
+
+### 3. SLURM Scripts (for HPC)
+
+SLURM scripts are provided in `slurm_scripts/` for running on HPC clusters:
+
+1. Edit `wrapper_run_embedding_analysis.sh` with your paths
+2. Submit: `bash slurm_scripts/wrapper_run_embedding_analysis.sh`
+3. For interactive testing: `bash slurm_scripts/wrapper_run_embedding_analysis.sh --interactive`
+
+### 4. Outputs
+
+- `embedding_analysis_results.json`: All metrics (accuracy, precision, recall, F1, MCC, AUC, sensitivity, specificity, silhouette scores)
+- `embeddings_pretrained.npz`: Cached embeddings for train/val/test sets
+- `pca_visualization_pretrained.png`: PCA plot showing class separation
+- `test_predictions_pretrained.csv`: Test predictions with probabilities
+- `three_layer_nn_pretrained.pt`: Trained 3-layer neural network model
+
+**Caching:** Embeddings are cached in `.npz` files when `--cache_embeddings` is used. Delete them to re-extract with different settings.
+
+---
+
+## Original Evo README
+
+The remainder of this README is from the [original Evo repository](https://github.com/evo-design/evo).
+
+---
+
 **We have developed a new model called Evo 2 that extends the Evo 1 model and its ideas to all domains of life. Please see [https://github.com/arcinstitute/evo2](https://github.com/arcinstitute/evo2) for more details.**
 
 ![Evo](evo.jpg)
