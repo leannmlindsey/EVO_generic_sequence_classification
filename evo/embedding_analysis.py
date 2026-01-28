@@ -12,6 +12,7 @@ Based on approaches from:
 import argparse
 import json
 import os
+import pkgutil
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
 
@@ -19,6 +20,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+import yaml
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
@@ -44,6 +46,70 @@ import matplotlib.pyplot as plt
 
 from evo import Evo
 from evo.scoring import prepare_batch
+from stripedhyena.model import StripedHyena
+from stripedhyena.tokenizer import CharLevelTokenizer
+from stripedhyena.utils import dotdict
+
+
+def create_random_evo_model(model_name: str, device: str, seed: int = 42):
+    """
+    Create a randomly initialized Evo model (same architecture, no pretrained weights).
+
+    This is useful for baseline comparison to measure the value of pretrained weights.
+
+    Parameters
+    ----------
+    model_name : str
+        Name of the Evo model (used to determine config)
+    device : str
+        Device to load model on
+    seed : int
+        Random seed for reproducible initialization
+
+    Returns
+    -------
+    model : StripedHyena
+        Randomly initialized model
+    tokenizer : CharLevelTokenizer
+        Tokenizer (same as pretrained)
+    """
+    print("\n" + "=" * 60)
+    print("Creating Randomly Initialized Baseline Model")
+    print("=" * 60)
+
+    # Set seed for reproducible random initialization
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    # Determine config path based on model name (same logic as in evo/models.py)
+    if model_name in ['evo-1-8k-base', 'evo-1-8k-crispr', 'evo-1-8k-transposon', 'evo-1.5-8k-base']:
+        config_path = 'configs/evo-1-8k-base_inference.yml'
+    elif model_name == 'evo-1-131k-base':
+        config_path = 'configs/evo-1-131k-base_inference.yml'
+    else:
+        raise ValueError(f"Unknown model name: {model_name}")
+
+    # Load config from evo package
+    print(f"Loading config from: {config_path}")
+    import evo
+    config = yaml.safe_load(pkgutil.get_data('evo', config_path))
+    global_config = dotdict(config, Loader=yaml.FullLoader)
+
+    # Create model with random weights (no pretrained weights loaded)
+    print("Initializing StripedHyena with random weights...")
+    model = StripedHyena(global_config)
+    model.to_bfloat16_except_poles_residues()
+
+    if device is not None:
+        model = model.to(device)
+    model.eval()
+
+    # Use same tokenizer as pretrained
+    tokenizer = CharLevelTokenizer(512)
+
+    print("Random model initialized successfully")
+
+    return model, tokenizer
 
 
 class IdentityUnembed(nn.Module):
@@ -257,7 +323,7 @@ class EvoEmbeddingExtractor:
 
 
 def extract_embeddings(
-    extractor: EvoEmbeddingExtractor,
+    extractor,  # EvoEmbeddingExtractor or RandomEvoEmbeddingExtractor
     sequences: List[str],
     labels: List[int],
     batch_size: int = 8,
@@ -269,7 +335,7 @@ def extract_embeddings(
 
     Parameters
     ----------
-    extractor : EvoEmbeddingExtractor
+    extractor : EvoEmbeddingExtractor or RandomEvoEmbeddingExtractor
         Initialized embedding extractor
     sequences : List[str]
         DNA sequences
@@ -313,30 +379,90 @@ def extract_embeddings(
     return np.vstack(all_embeddings), np.array(labels)
 
 
-def generate_random_embeddings(
-    num_samples: int,
-    hidden_dim: int = 4096,
-    seed: int = 42,
-) -> np.ndarray:
+class RandomEvoEmbeddingExtractor:
     """
-    Generate random embeddings as a baseline.
+    Wrapper for randomly initialized Evo model that extracts embeddings.
 
-    Parameters
-    ----------
-    num_samples : int
-        Number of samples
-    hidden_dim : int
-        Embedding dimension
-    seed : int
-        Random seed for reproducibility
-
-    Returns
-    -------
-    np.ndarray
-        Shape (num_samples, hidden_dim)
+    This is identical to EvoEmbeddingExtractor but uses a randomly initialized
+    model instead of pretrained weights, for baseline comparison.
     """
-    rng = np.random.RandomState(seed)
-    return rng.randn(num_samples, hidden_dim).astype(np.float32)
+
+    def __init__(
+        self,
+        model_name: str = 'evo-1-8k-base',
+        device: str = 'cuda:0',
+        pooling: str = 'mean',
+        seed: int = 42,
+    ):
+        self.model_name = model_name
+        self.device = device
+        self.pooling = pooling
+
+        # Create randomly initialized model
+        self.model, self.tokenizer = create_random_evo_model(model_name, device, seed)
+        self.hidden_dim = 4096
+
+        # Use unembed patching for final layer (same as pretrained)
+        self._original_unembed = self.model.unembed
+        self.model.unembed = IdentityUnembed()
+        print("Using unembed patching for final layer embeddings (random model)")
+
+    def _pool_embeddings(
+        self,
+        hidden_states: torch.Tensor,
+        seq_lengths: List[int],
+        prepend_bos: bool = True,
+    ) -> torch.Tensor:
+        """Pool hidden states to get fixed-size embeddings."""
+        batch_size = hidden_states.shape[0]
+        pooled = []
+
+        for i in range(batch_size):
+            seq_len = seq_lengths[i]
+            start_idx = 1 if prepend_bos else 0
+            end_idx = start_idx + seq_len
+            seq_hidden = hidden_states[i, start_idx:end_idx, :]
+
+            if self.pooling == 'mean':
+                pooled.append(seq_hidden.mean(dim=0))
+            elif self.pooling == 'first':
+                pooled.append(seq_hidden[0, :])
+            elif self.pooling == 'last':
+                pooled.append(seq_hidden[-1, :])
+            else:
+                raise ValueError(f"Unknown pooling strategy: {self.pooling}")
+
+        return torch.stack(pooled, dim=0)
+
+    def extract_batch(
+        self,
+        sequences: List[str],
+        prepend_bos: bool = True,
+    ) -> np.ndarray:
+        """Extract embeddings for a batch of sequences."""
+        input_ids, seq_lengths = prepare_batch(
+            sequences,
+            self.tokenizer,
+            prepend_bos=prepend_bos,
+            device=self.device,
+        )
+
+        with torch.inference_mode():
+            output, _ = self.model(input_ids)
+
+        hidden_states = output
+        embeddings = self._pool_embeddings(hidden_states, seq_lengths, prepend_bos)
+
+        return embeddings.float().cpu().numpy()
+
+    def restore_model(self):
+        """Restore original model state."""
+        if hasattr(self, '_original_unembed'):
+            self.model.unembed = self._original_unembed
+
+    def __del__(self):
+        """Cleanup on deletion."""
+        self.restore_model()
 
 
 def train_linear_probe(
@@ -797,9 +923,15 @@ def main():
 
     # Options
     parser.add_argument(
+        '--seed',
+        type=int,
+        default=42,
+        help='Random seed for reproducibility',
+    )
+    parser.add_argument(
         '--include_random_baseline',
         action='store_true',
-        help='Include random embedding baseline comparison',
+        help='Include random embedding baseline comparison (uses randomly initialized model)',
     )
     parser.add_argument(
         '--skip_nn',
@@ -813,6 +945,11 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Set random seed for reproducibility
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    print(f"\nRandom seed: {args.seed}")
 
     # Create output directory
     output_dir = Path(args.output_dir)
@@ -847,6 +984,7 @@ def main():
         'model_name': args.model_name,
         'pooling': args.pooling,
         'layer_idx': args.layer_idx,
+        'seed': args.seed,
         'num_train': len(train_seqs),
         'num_val': len(val_seqs),
         'num_test': len(test_seqs),
@@ -984,16 +1122,68 @@ def main():
         title=f"Evo Embeddings PCA ({args.model_name})",
     )
 
-    # Random baseline comparison
+    # Random baseline comparison (using randomly initialized model)
     if args.include_random_baseline:
-        print("\n" + "=" * 50)
-        print("Running random baseline comparison...")
-        print("=" * 50)
+        print("\n" + "#" * 60)
+        print("# RANDOM BASELINE MODEL ANALYSIS")
+        print("#" * 60)
 
-        hidden_dim = train_embeddings.shape[1]
-        random_train = generate_random_embeddings(len(train_seqs), hidden_dim)
-        random_val = generate_random_embeddings(len(val_seqs), hidden_dim)
-        random_test = generate_random_embeddings(len(test_seqs), hidden_dim)
+        # Check for cached random embeddings
+        cache_path_random = output_dir / 'embeddings_random.npz'
+
+        if args.cache_embeddings and cache_path_random.exists():
+            print(f"Loading cached random embeddings from {cache_path_random}")
+            cached_random = np.load(cache_path_random)
+            random_train = cached_random['train_embeddings']
+            random_val = cached_random['val_embeddings']
+            random_test = cached_random['test_embeddings']
+        else:
+            # Initialize random embedding extractor (uses seed + 1000 for different random init)
+            random_extractor = RandomEvoEmbeddingExtractor(
+                model_name=args.model_name,
+                device=args.device,
+                pooling=args.pooling,
+                seed=args.seed + 1000,
+            )
+
+            # Extract embeddings from random model
+            print("\nExtracting training embeddings (random model)...")
+            random_train, _ = extract_embeddings(
+                random_extractor, train_seqs, train_labels,
+                batch_size=args.batch_size,
+                max_length=args.max_length,
+            )
+
+            print("\nExtracting validation embeddings (random model)...")
+            random_val, _ = extract_embeddings(
+                random_extractor, val_seqs, val_labels,
+                batch_size=args.batch_size,
+                max_length=args.max_length,
+            )
+
+            print("\nExtracting test embeddings (random model)...")
+            random_test, _ = extract_embeddings(
+                random_extractor, test_seqs, test_labels,
+                batch_size=args.batch_size,
+                max_length=args.max_length,
+            )
+
+            # Cleanup
+            random_extractor.restore_model()
+            del random_extractor
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+            # Cache random embeddings
+            if args.cache_embeddings:
+                print(f"Caching random embeddings to {cache_path_random}")
+                np.savez(
+                    cache_path_random,
+                    train_embeddings=random_train,
+                    val_embeddings=random_val,
+                    test_embeddings=random_test,
+                )
+
+        print(f"\nRandom embedding shape: {random_train.shape}")
 
         # Random silhouette
         random_train_silhouette = calculate_silhouette(random_train, np.array(train_labels))
@@ -1053,8 +1243,43 @@ def main():
             random_test,
             np.array(test_labels),
             str(pca_random_path),
-            title="Random Embeddings PCA (Baseline)",
+            title="Random Model Embeddings PCA (Baseline)",
         )
+
+        # Compute embedding power (pretrained - random)
+        print("\n" + "=" * 60)
+        print("EMBEDDING POWER (Pretrained - Random)")
+        print("=" * 60)
+
+        embedding_power = {}
+
+        # Silhouette power
+        silhouette_power = test_silhouette - random_test_silhouette
+        embedding_power['silhouette_score'] = silhouette_power
+        print(f"\nSilhouette Score: {test_silhouette:.4f} - {random_test_silhouette:.4f} = {silhouette_power:+.4f}")
+
+        # Linear probe power
+        print("\nLinear Probe:")
+        for metric in ['accuracy', 'f1', 'mcc', 'auc']:
+            if metric in linear_results and metric in random_linear_results:
+                pretrained_val = linear_results[metric]
+                random_val_metric = random_linear_results[metric]
+                power = pretrained_val - random_val_metric
+                embedding_power[f'linear_probe_{metric}'] = power
+                print(f"  {metric}: {pretrained_val:.4f} - {random_val_metric:.4f} = {power:+.4f}")
+
+        # NN power
+        if not args.skip_nn:
+            print("\n3-Layer NN:")
+            for metric in ['accuracy', 'f1', 'mcc', 'auc']:
+                if metric in nn_results and metric in random_nn_results:
+                    pretrained_val = nn_results[metric]
+                    random_val_metric = random_nn_results[metric]
+                    power = pretrained_val - random_val_metric
+                    embedding_power[f'nn_{metric}'] = power
+                    print(f"  {metric}: {pretrained_val:.4f} - {random_val_metric:.4f} = {power:+.4f}")
+
+        results['embedding_power'] = embedding_power
 
     # Save results
     results_path = output_dir / 'embedding_analysis_results.json'
