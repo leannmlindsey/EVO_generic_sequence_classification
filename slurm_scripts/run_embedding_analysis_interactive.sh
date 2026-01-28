@@ -15,6 +15,7 @@
 #   NN_EPOCHS       - Neural network epochs (optional, default: 100)
 #   NN_HIDDEN_DIM   - Neural network hidden dim (optional, default: 256)
 #   NN_LR           - Neural network learning rate (optional, default: 0.001)
+#   SEED            - Random seed for reproducibility (optional, default: 42)
 #   INCLUDE_RANDOM_BASELINE - Include random baseline (optional, default: false)
 #   SKIP_NN         - Skip neural network training (optional, default: false)
 #   CACHE_EMBEDDINGS - Cache embeddings to disk (optional, default: false)
@@ -63,6 +64,9 @@ echo "Python: $(which python)"
 if python -c 'import torch; print(torch.cuda.is_available())' 2>/dev/null | grep -q "True"; then
     echo "CUDA available: True"
     echo "GPU: $(python -c 'import torch; print(torch.cuda.get_device_name(0))')"
+    echo ""
+    echo "GPU Information:"
+    nvidia-smi
 else
     echo "CUDA available: False (will use CPU - this will be slow!)"
 fi
@@ -76,13 +80,14 @@ POOLING="${POOLING:-mean}"
 NN_EPOCHS="${NN_EPOCHS:-100}"
 NN_HIDDEN_DIM="${NN_HIDDEN_DIM:-256}"
 NN_LR="${NN_LR:-0.001}"
+SEED="${SEED:-42}"
 DEVICE="${DEVICE:-cuda:0}"
 
 # Construct output directory if not specified
 if [ -z "$OUTPUT_DIR" ]; then
-    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-    OUTPUT_DIR="./embedding_analysis_results_${TIMESTAMP}"
+    OUTPUT_DIR="./results/embeddings/$(basename ${CSV_DIR})"
 fi
+mkdir -p "${OUTPUT_DIR}"
 
 echo "Configuration:"
 echo "  CSV_DIR: $CSV_DIR"
@@ -96,6 +101,7 @@ echo "  LAYER_IDX: ${LAYER_IDX:-'None (final layer)'}"
 echo "  NN_EPOCHS: $NN_EPOCHS"
 echo "  NN_HIDDEN_DIM: $NN_HIDDEN_DIM"
 echo "  NN_LR: $NN_LR"
+echo "  SEED: $SEED"
 echo "=========================================="
 
 # Build command arguments
@@ -110,6 +116,7 @@ CMD_ARGS=(
     --nn_epochs "$NN_EPOCHS"
     --nn_hidden_dim "$NN_HIDDEN_DIM"
     --nn_lr "$NN_LR"
+    --seed "$SEED"
 )
 
 # Add layer_idx if specified
