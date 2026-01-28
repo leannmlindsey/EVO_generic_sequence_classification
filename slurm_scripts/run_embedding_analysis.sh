@@ -78,7 +78,9 @@ SEED="${SEED:-42}"
 
 # Construct output directory if not specified
 if [ -z "$OUTPUT_DIR" ]; then
-    OUTPUT_DIR="./results/embeddings/$(basename ${CSV_DIR})"
+    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    DATASET_NAME=$(basename ${CSV_DIR})
+    OUTPUT_DIR="./results/embeddings/${DATASET_NAME}/${MODEL_NAME}_len${MAX_LENGTH}_${POOLING}_seed${SEED}_${TIMESTAMP}"
 fi
 mkdir -p "${OUTPUT_DIR}"
 
