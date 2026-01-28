@@ -46,7 +46,9 @@ export INCLUDE_RANDOM_BASELINE="false"  # Compare with random embeddings
 export SKIP_NN="false"                  # Only run linear probe, skip NN
 export CACHE_EMBEDDINGS="true"          # Cache embeddings for reuse
 
-# Device (for interactive mode)
+# Device for inference
+# NOTE: If CUDA_VISIBLE_DEVICES is set, use cuda:0 since that becomes the first visible GPU
+# Example: export CUDA_VISIBLE_DEVICES=3 means GPU 3 becomes cuda:0
 export DEVICE="cuda:0"
 
 # SLURM configuration (edit for your cluster)
