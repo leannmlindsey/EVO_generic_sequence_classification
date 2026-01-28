@@ -19,8 +19,8 @@ set -e  # Exit on error
 
 # Required: Path to directory containing train.csv, dev.csv/val.csv, test.csv
 # Each CSV should have columns: 'sequence' (DNA), 'label' (0 or 1)
-export CSV_DIR="/path/to/your/csv/data"
-
+export CSV_DIR="/net/intdev/metagut/lindseylm/LAMBDA_DATA/merged_datasets_filtered/4k"
+export CUDA_VISIBLE_DEVICES=0
 # Optional: Output directory (default: auto-generated with timestamp)
 # export OUTPUT_DIR="./embedding_analysis_results"
 
@@ -29,7 +29,7 @@ export MODEL_NAME="evo-1-8k-base"  # Options: evo-1.5-8k-base, evo-1-8k-base, ev
 
 # Processing configuration
 export BATCH_SIZE="8"              # Reduce if running out of GPU memory
-export MAX_LENGTH="8192"           # Maximum sequence length (8192 for 8k models, 131072 for 131k model)
+export MAX_LENGTH="4096"           # Maximum sequence length (8192 for 8k models, 131072 for 131k model)
 export POOLING="mean"              # Pooling strategy: mean, first, last
 
 # Layer selection (leave empty for final layer, which is recommended)
