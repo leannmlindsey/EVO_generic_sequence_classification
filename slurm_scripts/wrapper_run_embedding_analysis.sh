@@ -21,8 +21,9 @@ set -e  # Exit on error
 # Each CSV should have columns: 'sequence' (DNA), 'label' (0 or 1)
 export CSV_DIR="/path/to/your/csv/data"
 
-# Optional: Output directory (default: auto-generated with timestamp)
-# export OUTPUT_DIR="./embedding_analysis_results"
+# Optional: Output directory (default: ./results/embeddings/$(basename $CSV_DIR))
+# Leave empty to use default with dataset name
+export OUTPUT_DIR=""
 
 # Model configuration
 export MODEL_NAME="evo-1-8k-base"  # Options: evo-1.5-8k-base, evo-1-8k-base, evo-1-131k-base, evo-1-8k-crispr, evo-1-8k-transposon
@@ -40,6 +41,9 @@ export POOLING="mean"              # Pooling strategy: mean, first, last
 export NN_EPOCHS="100"
 export NN_HIDDEN_DIM="256"
 export NN_LR="0.001"
+
+# Random seed for reproducibility
+export SEED="42"
 
 # Optional flags (set to "true" to enable)
 export INCLUDE_RANDOM_BASELINE="false"  # Compare with random embeddings
@@ -104,6 +108,7 @@ echo "CSV_DIR: $CSV_DIR"
 echo "MODEL_NAME: $MODEL_NAME"
 echo "BATCH_SIZE: $BATCH_SIZE"
 echo "POOLING: $POOLING"
+echo "SEED: $SEED"
 echo "=========================================="
 
 # Check for interactive mode
