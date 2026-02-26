@@ -12,6 +12,7 @@ Based on approaches from:
 import argparse
 import json
 import os
+import pickle
 import pkgutil
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
@@ -1074,6 +1075,17 @@ def main():
         if k not in ['predictions', 'probabilities', 'scaler', 'classifier']
     }
 
+    # Save linear probe classifier and scaler for inference
+    lp_classifier_path = output_dir / 'linear_probe.pkl'
+    with open(lp_classifier_path, 'wb') as f:
+        pickle.dump(linear_results['classifier'], f)
+    print(f"Saved linear probe classifier to {lp_classifier_path}")
+
+    lp_scaler_path = output_dir / 'linear_probe_scaler.pkl'
+    with open(lp_scaler_path, 'wb') as f:
+        pickle.dump(linear_results['scaler'], f)
+    print(f"Saved linear probe scaler to {lp_scaler_path}")
+
     # Train neural network
     if not args.skip_nn:
         print("\nTraining 3-layer neural network...")
@@ -1097,10 +1109,20 @@ def main():
             if k not in ['predictions', 'probabilities', 'model', 'scaler']
         }
 
-        # Save NN model
+        # Save NN model with metadata for inference
         nn_model_path = output_dir / 'three_layer_nn_pretrained.pt'
-        torch.save(nn_results['model'].state_dict(), nn_model_path)
+        torch.save({
+            'model_state_dict': nn_results['model'].state_dict(),
+            'input_dim': train_embeddings.shape[1],
+            'hidden_dim': args.nn_hidden_dim,
+        }, nn_model_path)
         print(f"Saved neural network to {nn_model_path}")
+
+        # Save NN scaler for inference
+        nn_scaler_path = output_dir / 'three_layer_nn_scaler.pkl'
+        with open(nn_scaler_path, 'wb') as f:
+            pickle.dump(nn_results['scaler'], f)
+        print(f"Saved neural network scaler to {nn_scaler_path}")
 
         # Save predictions
         pred_df = pd.DataFrame({
