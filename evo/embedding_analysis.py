@@ -89,7 +89,8 @@ def apply_savanna_style_init(state_dict, hidden_size=4096, num_layers=32,
         if '_extra_state' in key or not isinstance(tensor, torch.Tensor):
             continue
 
-        if 'log_poles' in key:
+        if 'log_poles' in key or (key.endswith('.poles') and 'log_poles' not in key):
+            # Evo2 uses 'log_poles', Evo1 uses 'filter.poles'
             state_dict[key] = -torch.abs(torch.randn_like(tensor)) * 0.5 - 0.1
         elif 'residues' in key:
             state_size = tensor.shape[-1] if tensor.dim() > 1 else 16
@@ -104,7 +105,8 @@ def apply_savanna_style_init(state_dict, hidden_size=4096, num_layers=32,
                 -short_conv_bound, short_conv_bound)
         elif 'short_filter_bias' in key:
             state_dict[key] = torch.zeros_like(tensor)
-        elif 'norm' in key and 'weight' in key:
+        elif 'norm' in key and ('weight' in key or 'scale' in key):
+            # Evo2 uses 'norm.weight', Evo1 uses 'norm.scale'
             state_dict[key] = torch.ones_like(tensor)
         elif key.endswith('.bias'):
             state_dict[key] = torch.zeros_like(tensor)

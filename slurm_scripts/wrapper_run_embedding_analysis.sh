@@ -46,7 +46,7 @@ export NN_LR="0.001"
 export SEED="42"
 
 # Optional flags (set to "true" to enable)
-export INCLUDE_RANDOM_BASELINE="false"  # Compare with random embeddings
+export INCLUDE_RANDOM_BASELINE="true"   # Compare with random embeddings
 export SKIP_NN="false"                  # Only run linear probe, skip NN
 export CACHE_EMBEDDINGS="true"          # Cache embeddings for reuse
 
