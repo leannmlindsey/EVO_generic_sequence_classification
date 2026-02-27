@@ -52,11 +52,74 @@ from stripedhyena.tokenizer import CharLevelTokenizer
 from stripedhyena.utils import dotdict
 
 
+def apply_savanna_style_init(state_dict, hidden_size=4096, num_layers=32,
+                             short_filter_length=3, seed=42):
+    """
+    Apply Savanna-style initialization to a StripedHyena state_dict.
+
+    This explicitly re-randomizes every parameter with appropriate distributions,
+    rather than relying on PyTorch/config defaults (which may use zeros for MLPs,
+    or leave hyena-specific parameters like poles/residues poorly initialized).
+
+    Adapted from Evo2's extract_random_embeddings.py.
+
+    Parameters
+    ----------
+    state_dict : dict
+        Model state dict (modified in-place)
+    hidden_size : int
+        Model hidden dimension
+    num_layers : int
+        Number of layers
+    short_filter_length : int
+        Short convolution filter length
+    seed : int
+        Random seed for reproducibility
+    """
+    import math
+
+    torch.manual_seed(seed)
+
+    small_init_std = math.sqrt(2.0 / (5.0 * hidden_size))
+    wang_init_std = 2.0 / num_layers / math.sqrt(hidden_size)
+    short_conv_bound = math.sqrt(1.0 / short_filter_length)
+
+    for key in list(state_dict.keys()):
+        tensor = state_dict[key]
+        if '_extra_state' in key or not isinstance(tensor, torch.Tensor):
+            continue
+
+        if 'log_poles' in key:
+            state_dict[key] = -torch.abs(torch.randn_like(tensor)) * 0.5 - 0.1
+        elif 'residues' in key:
+            state_size = tensor.shape[-1] if tensor.dim() > 1 else 16
+            state_dict[key] = torch.randn_like(tensor) * 0.1 / math.sqrt(state_size)
+        elif key.endswith('.D'):
+            state_dict[key] = torch.zeros_like(tensor)
+        elif '.filter.h' in key or (key.endswith('.h') and 'filter' in key):
+            filter_length = tensor.shape[-1]
+            state_dict[key] = torch.randn_like(tensor) / math.sqrt(filter_length) * 1e-3
+        elif 'short_filter_weight' in key:
+            state_dict[key] = torch.empty_like(tensor).uniform_(
+                -short_conv_bound, short_conv_bound)
+        elif 'short_filter_bias' in key:
+            state_dict[key] = torch.zeros_like(tensor)
+        elif 'norm' in key and 'weight' in key:
+            state_dict[key] = torch.ones_like(tensor)
+        elif key.endswith('.bias'):
+            state_dict[key] = torch.zeros_like(tensor)
+        elif ('out_filter_dense' in key or 'out_proj' in key) and 'weight' in key:
+            state_dict[key] = torch.randn_like(tensor) * wang_init_std
+        elif 'weight' in key and tensor.dim() >= 2:
+            state_dict[key] = torch.randn_like(tensor) * small_init_std
+
+
 def create_random_evo_model(model_name: str, device: str, seed: int = 42):
     """
     Create a randomly initialized Evo model (same architecture, no pretrained weights).
 
-    This is useful for baseline comparison to measure the value of pretrained weights.
+    Uses Savanna-style initialization to explicitly re-randomize all parameters
+    with appropriate distributions, matching the approach used by Evo2.
 
     Parameters
     ----------
@@ -78,10 +141,6 @@ def create_random_evo_model(model_name: str, device: str, seed: int = 42):
     print("Creating Randomly Initialized Baseline Model")
     print("=" * 60)
 
-    # Set seed for reproducible random initialization
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-
     # Determine config path based on model name (same logic as in evo/models.py)
     if model_name in ['evo-1-8k-base', 'evo-1-8k-crispr', 'evo-1-8k-transposon', 'evo-1.5-8k-base']:
         config_path = 'configs/evo-1-8k-base_inference.yml'
@@ -96,9 +155,30 @@ def create_random_evo_model(model_name: str, device: str, seed: int = 42):
     config = yaml.safe_load(pkgutil.get_data('evo', config_path))
     global_config = dotdict(config, Loader=yaml.FullLoader)
 
-    # Create model with random weights (no pretrained weights loaded)
-    print("Initializing StripedHyena with random weights...")
+    hidden_size = global_config.get('hidden_size', 4096)
+    num_layers = global_config.get('num_layers', 32)
+    short_filter_length = global_config.get('short_filter_length', 3)
+
+    # Create model architecture
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    print("Initializing StripedHyena architecture...")
     model = StripedHyena(global_config)
+
+    # Apply Savanna-style initialization to properly randomize all parameters
+    # (the constructor defaults may use zeros for MLPs and leave hyena-specific
+    # parameters like poles/residues poorly initialized)
+    print("Applying Savanna-style initialization...")
+    random_sd = {k: v.cpu() for k, v in model.state_dict().items()}
+    apply_savanna_style_init(
+        random_sd,
+        hidden_size=hidden_size,
+        num_layers=num_layers,
+        short_filter_length=short_filter_length,
+        seed=seed,
+    )
+    model.load_state_dict(random_sd, strict=False)
+
     model.to_bfloat16_except_poles_residues()
 
     if device is not None:
@@ -108,7 +188,7 @@ def create_random_evo_model(model_name: str, device: str, seed: int = 42):
     # Use same tokenizer as pretrained
     tokenizer = CharLevelTokenizer(512)
 
-    print("Random model initialized successfully")
+    print("Random model initialized successfully (Savanna-style)")
 
     return model, tokenizer
 
