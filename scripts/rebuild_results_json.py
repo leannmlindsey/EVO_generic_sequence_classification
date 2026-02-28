@@ -60,12 +60,20 @@ def calculate_metrics(y_true, y_pred, y_prob=None):
     return metrics
 
 
+def has_nan(arr):
+    """Check if array contains NaN or Inf."""
+    return np.isnan(arr).any() or np.isinf(arr).any()
+
+
 def calc_silhouette(embeddings, labels):
     """Calculate silhouette score."""
     if silhouette_score is None:
-        return 0.0
+        return None
     if len(np.unique(labels)) < 2:
-        return 0.0
+        return None
+    if has_nan(embeddings):
+        print("  WARNING: Embeddings contain NaN/Inf, skipping silhouette")
+        return None
     return silhouette_score(embeddings, labels)
 
 
@@ -233,102 +241,113 @@ def main():
             random_train = cached_random['train_embeddings']
             random_test = cached_random['test_embeddings']
 
-            # Random silhouette
-            results['random'] = {}
-            if train_labels is not None:
-                random_train_sil = calc_silhouette(random_train, train_labels)
-                results['random']['train_silhouette'] = random_train_sil
-                print(f"  Random train silhouette: {random_train_sil:.4f}")
-            if test_labels is not None:
-                random_test_sil = calc_silhouette(random_test, test_labels)
-                results['random']['test_silhouette'] = random_test_sil
-                print(f"  Random test silhouette: {random_test_sil:.4f}")
+            # Check for NaN in random embeddings
+            random_has_nan = has_nan(random_train) or has_nan(random_test)
+            if random_has_nan:
+                print("  WARNING: Random embeddings contain NaN/Inf!")
+                print("  This likely means they were generated before the Savanna-style init fix.")
+                print("  Delete embeddings_random.npz and re-extract to get valid random baseline.")
+                print("  Skipping random baseline metrics.")
+                results['random'] = {'error': 'embeddings contain NaN - re-extract needed'}
+            else:
+                # Random silhouette
+                results['random'] = {}
+                if train_labels is not None:
+                    random_train_sil = calc_silhouette(random_train, train_labels)
+                    if random_train_sil is not None:
+                        results['random']['train_silhouette'] = random_train_sil
+                        print(f"  Random train silhouette: {random_train_sil:.4f}")
+                if test_labels is not None:
+                    random_test_sil = calc_silhouette(random_test, test_labels)
+                    if random_test_sil is not None:
+                        results['random']['test_silhouette'] = random_test_sil
+                        print(f"  Random test silhouette: {random_test_sil:.4f}")
 
-            # Random LP - recompute by training on random embeddings
-            if test_labels is not None and train_labels is not None:
-                from sklearn.linear_model import LogisticRegression
-                from sklearn.preprocessing import StandardScaler
+                # Random LP - recompute by training on random embeddings
+                if test_labels is not None and train_labels is not None:
+                    from sklearn.linear_model import LogisticRegression
+                    from sklearn.preprocessing import StandardScaler
 
-                print("\n  Training random LP...")
-                rscaler = StandardScaler()
-                rtrain_scaled = rscaler.fit_transform(random_train)
-                rtest_scaled = rscaler.transform(random_test)
-                rclf = LogisticRegression(max_iter=1000, random_state=42)
-                rclf.fit(rtrain_scaled, train_labels)
-                rlp_preds = rclf.predict(rtest_scaled)
-                rlp_probs = rclf.predict_proba(rtest_scaled)[:, 1]
-                rlp_metrics = calculate_metrics(test_labels, rlp_preds, rlp_probs)
-                results['random']['linear_probe'] = rlp_metrics
+                    print("\n  Training random LP...")
+                    rscaler = StandardScaler()
+                    rtrain_scaled = rscaler.fit_transform(random_train)
+                    rtest_scaled = rscaler.transform(random_test)
+                    rclf = LogisticRegression(max_iter=1000, random_state=42)
+                    rclf.fit(rtrain_scaled, train_labels)
+                    rlp_preds = rclf.predict(rtest_scaled)
+                    rlp_probs = rclf.predict_proba(rtest_scaled)[:, 1]
+                    rlp_metrics = calculate_metrics(test_labels, rlp_preds, rlp_probs)
+                    results['random']['linear_probe'] = rlp_metrics
 
-                print("  Random Linear Probe Results:")
-                for k, v in rlp_metrics.items():
-                    print(f"    {k}: {v:.4f}")
+                    print("  Random Linear Probe Results:")
+                    for k, v in rlp_metrics.items():
+                        print(f"    {k}: {v:.4f}")
 
-            # Random NN - need to retrain, which is expensive
-            # Check if there's a random predictions CSV
-            random_pred_path = output_dir / 'test_predictions_random.csv'
-            if random_pred_path.exists():
-                print("\n  Recomputing random NN metrics from test_predictions_random.csv...")
-                rpred_df = pd.read_csv(random_pred_path)
-                ry_true = rpred_df['true_label'].astype(int).values
-                ry_pred = rpred_df['predicted_label'].astype(int).values
-                ry_prob = rpred_df['probability'].values
-                rnn_metrics = calculate_metrics(ry_true, ry_pred, ry_prob)
-                results['random']['neural_network'] = rnn_metrics
-
-                print("  Random Neural Network Results:")
-                for k, v in rnn_metrics.items():
-                    print(f"    {k}: {v:.4f}")
-            elif test_labels is not None and train_labels is not None:
-                # Retrain random NN (fast, no GPU needed for small data)
-                print("\n  Retraining random NN on random embeddings...")
-                random_val = cached_random['val_embeddings']
-                # Get val labels
-                val_labels = None
-                if args.csv_dir:
-                    for vname in ['val.csv', 'dev.csv']:
-                        vpath = Path(args.csv_dir) / vname
-                        if vpath.exists():
-                            vdf = pd.read_csv(vpath)
-                            if 'label' in vdf.columns:
-                                val_labels = vdf['label'].astype(int).values
-                            break
-
-                if val_labels is not None:
-                    from evo.embedding_analysis import train_three_layer_nn
-                    rnn_results = train_three_layer_nn(
-                        random_train, train_labels,
-                        random_val, val_labels,
-                        random_test, test_labels,
-                        device='cpu',
-                    )
-                    rnn_metrics = {k: v for k, v in rnn_results.items()
-                                   if k not in ['predictions', 'probabilities', 'model', 'scaler']}
+                # Random NN - need to retrain, which is expensive
+                # Check if there's a random predictions CSV
+                random_pred_path = output_dir / 'test_predictions_random.csv'
+                if random_pred_path.exists():
+                    print("\n  Recomputing random NN metrics from test_predictions_random.csv...")
+                    rpred_df = pd.read_csv(random_pred_path)
+                    ry_true = rpred_df['true_label'].astype(int).values
+                    ry_pred = rpred_df['predicted_label'].astype(int).values
+                    ry_prob = rpred_df['probability'].values
+                    rnn_metrics = calculate_metrics(ry_true, ry_pred, ry_prob)
                     results['random']['neural_network'] = rnn_metrics
 
                     print("  Random Neural Network Results:")
                     for k, v in rnn_metrics.items():
                         print(f"    {k}: {v:.4f}")
+                elif test_labels is not None and train_labels is not None:
+                    # Retrain random NN (fast, no GPU needed for small data)
+                    print("\n  Retraining random NN on random embeddings...")
+                    random_val = cached_random['val_embeddings']
+                    # Get val labels
+                    val_labels = None
+                    if args.csv_dir:
+                        for vname in ['val.csv', 'dev.csv']:
+                            vpath = Path(args.csv_dir) / vname
+                            if vpath.exists():
+                                vdf = pd.read_csv(vpath)
+                                if 'label' in vdf.columns:
+                                    val_labels = vdf['label'].astype(int).values
+                                break
 
-            # Embedding power
-            embedding_power = {}
-            if 'test_silhouette' in results.get('pretrained', {}) and 'test_silhouette' in results.get('random', {}):
-                sil_power = results['pretrained']['test_silhouette'] - results['random']['test_silhouette']
-                embedding_power['silhouette_score'] = sil_power
+                    if val_labels is not None:
+                        from evo.embedding_analysis import train_three_layer_nn
+                        rnn_results = train_three_layer_nn(
+                            random_train, train_labels,
+                            random_val, val_labels,
+                            random_test, test_labels,
+                            device='cpu',
+                        )
+                        rnn_metrics = {k: v for k, v in rnn_results.items()
+                                       if k not in ['predictions', 'probabilities', 'model', 'scaler']}
+                        results['random']['neural_network'] = rnn_metrics
 
-            for classifier_key, prefix in [('linear_probe', 'linear_probe'), ('neural_network', 'nn')]:
-                pretrained_metrics = results.get('pretrained', {}).get(classifier_key, {})
-                random_metrics = results.get('random', {}).get(classifier_key, {})
-                for metric in ['accuracy', 'f1', 'mcc', 'auc']:
-                    if metric in pretrained_metrics and metric in random_metrics:
-                        power = pretrained_metrics[metric] - random_metrics[metric]
-                        embedding_power[f'{prefix}_{metric}'] = power
+                        print("  Random Neural Network Results:")
+                        for k, v in rnn_metrics.items():
+                            print(f"    {k}: {v:.4f}")
 
-            if embedding_power:
-                results['embedding_power'] = embedding_power
-                print("\n  Embedding Power (pretrained - random):")
-                for k, v in embedding_power.items():
-                    print(f"    {k}: {v:+.4f}")
+                # Embedding power
+                embedding_power = {}
+                if 'test_silhouette' in results.get('pretrained', {}) and 'test_silhouette' in results.get('random', {}):
+                    sil_power = results['pretrained']['test_silhouette'] - results['random']['test_silhouette']
+                    embedding_power['silhouette_score'] = sil_power
+
+                for classifier_key, prefix in [('linear_probe', 'linear_probe'), ('neural_network', 'nn')]:
+                    pretrained_metrics = results.get('pretrained', {}).get(classifier_key, {})
+                    random_metrics = results.get('random', {}).get(classifier_key, {})
+                    for metric in ['accuracy', 'f1', 'mcc', 'auc']:
+                        if metric in pretrained_metrics and metric in random_metrics:
+                            power = pretrained_metrics[metric] - random_metrics[metric]
+                            embedding_power[f'{prefix}_{metric}'] = power
+
+                if embedding_power:
+                    results['embedding_power'] = embedding_power
+                    print("\n  Embedding Power (pretrained - random):")
+                    for k, v in embedding_power.items():
+                        print(f"    {k}: {v:+.4f}")
 
     # Save JSON
     results_path = output_dir / 'embedding_analysis_results.json'
