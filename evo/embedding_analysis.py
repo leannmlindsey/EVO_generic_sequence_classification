@@ -1386,9 +1386,25 @@ def main():
         results['embedding_power'] = embedding_power
 
     # Save results
+    def sanitize_for_json(obj):
+        """Convert numpy types and NaN/Inf to JSON-safe values."""
+        if isinstance(obj, dict):
+            return {k: sanitize_for_json(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [sanitize_for_json(v) for v in obj]
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating, float)):
+            if np.isnan(obj) or np.isinf(obj):
+                return None
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return sanitize_for_json(obj.tolist())
+        return obj
+
     results_path = output_dir / 'embedding_analysis_results.json'
     with open(results_path, 'w') as f:
-        json.dump(results, f, indent=2)
+        json.dump(sanitize_for_json(results), f, indent=2)
     print(f"\nSaved results to {results_path}")
 
     print("\nDone!")
